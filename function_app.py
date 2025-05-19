@@ -2,9 +2,11 @@ import azure.functions as func
 import json
 import logging
 import os
+import uuid
 from azure.storage.blob import BlobServiceClient
 import azure.cognitiveservices.speech as speechsdk
 from azure.servicebus import ServiceBusClient, ServiceBusMessage
+import tempfile
 
 app = func.FunctionApp()
 
@@ -18,7 +20,10 @@ def blobberfunction(myblob: func.InputStream):
                  f"Blob Size: {myblob.length} bytes")
 
     # Download audio blob to temp file
-    temp_audio_path = f"/tmp/{myblob.name}"
+    filename = os.path.basename(myblob.name).replace(" ", "_")
+    temp_dir = tempfile.gettempdir()
+    temp_audio_path = os.path.join(temp_dir, filename)
+
     with open(temp_audio_path, "wb") as audio_file:
         audio_file.write(myblob.read())
 
@@ -31,13 +36,22 @@ def blobberfunction(myblob: func.InputStream):
     result = recognizer.recognize_once()
     transcript = result.text
 
+    # Generate a random call_id
+    call_id = str(uuid.uuid4())
+
+    # Prepare transcript as JSON with call_id
+    transcript_json = json.dumps({
+        "call_id": call_id,
+        "transcript": transcript
+    })
+
     # Send transcript to Service Bus Topic
     servicebus_conn_str = os.getenv("AZURE_SERVICEBUS_CONNECTION_STRING")
     topic_name = os.getenv("AZURE_SERVICEBUS_TOPIC_NAME", "transcripttopic")
     with ServiceBusClient.from_connection_string(servicebus_conn_str) as client:
         sender = client.get_topic_sender(topic_name=topic_name)
         with sender:
-            message = ServiceBusMessage(transcript)
+            message = ServiceBusMessage(transcript_json)
             sender.send_messages(message)
     
     logging.info("Transcript sent to Service Bus topic.")
