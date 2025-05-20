@@ -7,6 +7,7 @@ from azure.storage.blob import BlobServiceClient
 import azure.cognitiveservices.speech as speechsdk
 from azure.servicebus import ServiceBusClient, ServiceBusMessage
 import tempfile
+import threading
 
 app = func.FunctionApp()
 
@@ -32,26 +33,53 @@ def blobberfunction(myblob: func.InputStream):
     speech_region = os.getenv("AZURE_SPEECH_REGION")
     speech_config = speechsdk.SpeechConfig(subscription=speech_key, region=speech_region)
     
-    audio_config = speechsdk.audio.AudioConfig(filename=temp_audio_path)
-    transcriber = speechsdk.transcription.ConversationTranscriber(speech_config=speech_config, audio_config=audio_config)
+    # Enable speaker diarization
+    speech_config.set_service_property(
+        name="diarizationEnabled",
+        value="true",
+        channel=speechsdk.ServicePropertyChannel.UriQueryParameter
+    )
+    speech_config.set_service_property(
+        name="diarizationSpeakerCount",
+        value="2",
+        channel=speechsdk.ServicePropertyChannel.UriQueryParameter
+    )
+
+    # Set up audio and transcriber
+    audio_config = speechsdk.AudioConfig(filename=temp_audio_path)
+    transcriber = speechsdk.transcription.ConversationTranscriber(
+        speech_config=speech_config, audio_config=audio_config)
 
     transcript_lines = []
+    done = threading.Event()
 
     def handle_transcribed(evt):
-        speaker = f"Speaker {evt.result.speaker_id}" if evt.result.speaker_id else "Speaker"
-        transcript_lines.append(f"{speaker}: {evt.result.text}")
+        speaker = evt.result.speaker_id
+        label = f"Speaker {speaker}" if speaker else "Unknown"
+        if evt.result.text:
+            transcript_lines.append(f"{label}: {evt.result.text}")
+            logging.info(f"{label}: {evt.result.text}")
 
     def handle_canceled(evt):
         logging.warning(f"Transcription canceled: {evt.reason}")
         if evt.reason == speechsdk.CancellationReason.Error:
             logging.error(f"Error details: {evt.error_details}")
+        done.set()
+
+    def handle_session_stopped(evt):
+        logging.info("Transcription session stopped.")
+        done.set()
 
     transcriber.transcribed.connect(handle_transcribed)
     transcriber.canceled.connect(handle_canceled)
+    transcriber.session_stopped.connect(handle_session_stopped)
 
+    # Start transcription and wait until complete
     transcriber.start_transcribing_async().get()
+    done.wait()
     transcriber.stop_transcribing_async().get()
 
+    # Compile final transcript
     transcript = "\n".join(transcript_lines)
 
     # Generate a random call_id
