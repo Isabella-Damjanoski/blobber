@@ -31,10 +31,28 @@ def blobberfunction(myblob: func.InputStream):
     speech_key = os.getenv("AZURE_SPEECH_KEY")
     speech_region = os.getenv("AZURE_SPEECH_REGION")
     speech_config = speechsdk.SpeechConfig(subscription=speech_key, region=speech_region)
-    audio_config = speechsdk.AudioConfig(filename=temp_audio_path)
-    recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, audio_config=audio_config)
-    result = recognizer.recognize_once()
-    transcript = result.text
+    
+    audio_config = speechsdk.audio.AudioConfig(filename=temp_audio_path)
+    transcriber = speechsdk.transcription.ConversationTranscriber(speech_config=speech_config, audio_config=audio_config)
+
+    transcript_lines = []
+
+    def handle_transcribed(evt):
+        speaker = f"Speaker {evt.result.speaker_id}" if evt.result.speaker_id else "Speaker"
+        transcript_lines.append(f"{speaker}: {evt.result.text}")
+
+    def handle_canceled(evt):
+        logging.warning(f"Transcription canceled: {evt.reason}")
+        if evt.reason == speechsdk.CancellationReason.Error:
+            logging.error(f"Error details: {evt.error_details}")
+
+    transcriber.transcribed.connect(handle_transcribed)
+    transcriber.canceled.connect(handle_canceled)
+
+    transcriber.start_transcribing_async().get()
+    transcriber.stop_transcribing_async().get()
+
+    transcript = "\n".join(transcript_lines)
 
     # Generate a random call_id
     call_id = str(uuid.uuid4())
